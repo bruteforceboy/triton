@@ -113,3 +113,35 @@ def test_cpu_triple_matches_compiled_target(device):
     expected_arch = arch_aliases.get(machine, machine)
     reported_arch = triple.split("-")[0]
     assert arch_aliases.get(reported_arch, reported_arch) == expected_arch
+
+
+@pytest.mark.cpu
+@pytest.mark.parametrize("grid", [(0, 1, 1), (1, 1, 1), (2, 1, 1), (3, 5, 7), (130, 1, 1), (1, 70, 2)])
+@pytest.mark.parametrize("num_cpu_threads", [0, 1, 3, 200])
+def test_cpu_launcher_program_ids(grid, num_cpu_threads, device):
+    if device != "cpu":
+        pytest.skip("CPU launcher test requires --device cpu.")
+
+    @triton.jit
+    def kernel(out_ptr):
+        x = tl.program_id(0)
+        y = tl.program_id(1)
+        z = tl.program_id(2)
+        nx = tl.num_programs(0)
+        ny = tl.num_programs(1)
+        base = ((z * ny + y) * nx + x) * 6
+        tl.store(out_ptr + base + 0, x)
+        tl.store(out_ptr + base + 1, y)
+        tl.store(out_ptr + base + 2, z)
+        tl.store(out_ptr + base + 3, nx)
+        tl.store(out_ptr + base + 4, ny)
+        tl.store(out_ptr + base + 5, tl.num_programs(2))
+
+    # Grids smaller than the thread count, explicit thread counts, and empty
+    # grids must still run every program exactly once with the right ids.
+    gx, gy, gz = grid
+    out = torch.full((max(gx * gy * gz, 1) * 6, ), -1, dtype=torch.int32, device=device)
+    kernel[grid](out, num_cpu_threads=num_cpu_threads)
+    expected = [[x, y, z, gx, gy, gz] for z in range(gz) for y in range(gy) for x in range(gx)]
+    expected = torch.tensor(expected or [[-1] * 6], dtype=torch.int32, device=device).flatten()
+    assert torch.equal(out, expected)

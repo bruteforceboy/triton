@@ -219,40 +219,33 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
   return ptr_info;
 }}
 
-static std::unique_ptr<uint32_t[][3]> get_all_grids(uint32_t gridX, uint32_t gridY, uint32_t gridZ) {{
-  std::unique_ptr<uint32_t[][3]> grids(new uint32_t[gridX * gridY * gridZ][3]);
-  // TODO: which order would be more effective for cache locality?
-  for (uint32_t z = 0; z < gridZ; ++z) {{
-    for (uint32_t y = 0; y < gridY; ++y) {{
-      for (uint32_t x = 0; x < gridX; ++x) {{
-        grids[z * gridY * gridX + y * gridX + x][0] = x;
-        grids[z * gridY * gridX + y * gridX + x][1] = y;
-        grids[z * gridY * gridX + y * gridX + x][2] = z;
-      }}
-    }}
-  }}
-  return grids;
-}}
-
 static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_threads, kernel_ptr_t kernel_ptr {(', ' + arg_decls) if len(arg_decls) > 0 else ''}) {{
   // TODO: Consider using omp collapse(3) clause for simplicity?
-  size_t N = gridX * gridY * gridZ;
+  size_t N = static_cast<size_t>(gridX) * gridY * gridZ;
+  if (N == 0)
+    return;
   if (N == 1) {{
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} 0, 0, 0, 1, 1, 1);
       return;
   }}
 
-  auto all_grids = get_all_grids(gridX, gridY, gridZ);
   int omp_max_threads = 1;
   #ifdef _OPENMP
   omp_max_threads = omp_get_max_threads();
   #endif // _OPENMP
   int max_threads = (num_threads > 0) ? num_threads : omp_max_threads;
+  // Entering a parallel region costs more with a larger team, so never start
+  // more threads than there are programs.
+  if (static_cast<size_t>(max_threads) > N)
+    max_threads = static_cast<int>(N);
+
+  // Program ids are decomposed from the flat index with x varying fastest.
+  size_t gridXY = static_cast<size_t>(gridX) * gridY;
 
   // Don't pay OMP overhead price when a single thread is used.
   if (max_threads == 1) {{
     for (size_t i = 0; i < N; ++i) {{
-      const auto [x, y, z] = all_grids[i];
+      uint32_t x = i % gridX, y = (i / gridX) % gridY, z = i / gridXY;
       (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
     }}
     return;
@@ -263,7 +256,7 @@ static void run_omp_kernels(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int 
 #pragma omp parallel for schedule(static) num_threads(max_threads)
 #endif // _OPENMP
   for (size_t i = 0; i < N; ++i) {{
-    const auto [x, y, z] = all_grids[i];
+    uint32_t x = i % gridX, y = (i / gridX) % gridY, z = i / gridXY;
     (*kernel_ptr)({kernel_fn_args_list + ', ' if len(kernel_fn_args) > 0 else ''} x, y, z, gridX, gridY, gridZ);
   }}
 }}
